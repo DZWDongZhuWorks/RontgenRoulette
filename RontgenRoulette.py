@@ -9,6 +9,8 @@ from PySide2.QtWidgets import (
 from PySide2.QtGui import QColor, QPainter, QPen, QBrush, QFont, QIcon
 from PySide2.QtCore import Qt, QTimer, QTime, Signal
 import pygame
+import csv
+from datetime import datetime
 
 class WheelWidget(QWidget):
     iteration_time_decided = Signal(float)  # Signal to emit the iteration time when animation finishes
@@ -39,7 +41,9 @@ class WheelWidget(QWidget):
         self.text_label = QLabel("0.0s", self)
         self.text_label.setAlignment(Qt.AlignCenter)
         self.text_label.setFont(QFont("Arial", 40))
-        self.text_label.setStyleSheet("border: 1px solid black; padding: 10px;")
+        self.text_label.setStyleSheet("border: 5px solid black; padding: 10px;")
+        self.setMaximumSize(200, 100)  # 限制最大寬度和高度為 300x300
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.text_label)
 
@@ -101,8 +105,6 @@ class WheelWidget(QWidget):
         rect = self.rect()
         painter.setRenderHint(QPainter.Antialiasing)
 
-
-
         painter.setPen(QPen(Qt.black, 2))
         painter.setBrush(QBrush(Qt.white))
 
@@ -110,7 +112,7 @@ class RouletteApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Rontgen Roulette")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 200, 200)
 
         # Initialize variables
         self.rewards_folder = "rewards"
@@ -121,12 +123,41 @@ class RouletteApp(QMainWindow):
         self.init_ui()
         self.highlighting_winner = False  # 新增布林變數
 
+        # 新增屬性以處理結果儲存
+        self.result_file = None  # 儲存抽獎結果的檔案路徑
+        self.file_initialized = False  # 是否已經初始化檔案
+
         # Initialize pygame for sound effects
         pygame.mixer.init()
         self.rolling_sound = pygame.mixer.Sound("resources/rolling_sound.wav")
         self.rolling_sound.set_volume(0.5)
         self.sound_channel = pygame.mixer.Channel(0)
+        
+    def _generate_result_file_name(self):
+        """生成不覆蓋舊檔的檔名，格式為 '得獎名單_YYYYMMDD_HHMMSS.csv'"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"得獎名單_{timestamp}.csv"
 
+    def _initialize_result_file(self):
+        """初始化結果檔案，在第一次抽獎時呼叫"""
+        if not self.file_initialized:
+            self.result_file = self._generate_result_file_name()
+            # 創建檔案並寫入標題行
+            with open(self.result_file, "w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file, delimiter=",")
+                writer.writerow(["員工姓名", "獎項"])
+            self.file_initialized = True
+
+    def _save_results_to_file(self, winners):
+        """將中獎結果寫入檔案"""
+        if not self.file_initialized:
+            self._initialize_result_file()
+        # 將中獎者寫入檔案
+        with open(self.result_file, "a", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file, delimiter=",")
+            for winner in winners:
+                writer.writerow([winner, self.current_reward])
+                
     def load_rewards(self):
         """Load prize lists from txt files in rewards folder."""
         for file in os.listdir(self.rewards_folder):
@@ -173,7 +204,9 @@ class RouletteApp(QMainWindow):
         set_font(self.mode_label, font_size)
         self.mode_combo = QComboBox()
         set_font(self.mode_combo, font_size)
-        self.mode_combo.addItems(["循序歷遍", "隨機歷遍"])
+        # 新增 "AI部門" 選項
+        self.mode_combo.addItems(["隨機歷遍", "循序歷遍", "AI部門"])
+        self.mode_combo.currentIndexChanged.connect(self.update_mode)
         reward_layout.addWidget(self.mode_label)
         reward_layout.addWidget(self.mode_combo)
 
@@ -212,29 +245,29 @@ class RouletteApp(QMainWindow):
         self.final_interval_spinner = QSpinBox()
         set_font(self.final_interval_spinner, font_size)
         self.final_interval_spinner.setRange(100, 5000)
-        self.final_interval_spinner.setValue(1500)  # Default 2000 ms
+        self.final_interval_spinner.setValue(500)  # Default 2000 ms
         reward_layout.addWidget(self.final_interval_label)
         reward_layout.addWidget(self.final_interval_spinner)
 
         main_layout.addLayout(reward_layout)
 
-        # Wheel widget
+        # 創建水平佈局
+        horizontal_layout = QHBoxLayout()
+        # 添加獎項顯示標籤
+        self.prize_label = QLabel("本次獎項：")
+        self.prize_label.setAlignment(Qt.AlignCenter)
+        set_font(self.prize_label, font_size + 12)  # 標籤字體略大
+        self.prize_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        horizontal_layout.addWidget(self.prize_label, stretch=2)
+        
+        # 添加 WheelWidget
         self.wheel_widget = WheelWidget()
         self.wheel_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        main_layout.addWidget(self.wheel_widget, stretch=1)
+        horizontal_layout.addWidget(self.wheel_widget, stretch=1)
 
-        # 添加歷遍時間顯示標籤
-        self.iteration_time_label = QLabel("本次樂透歷遍時間: 0.0 秒")
-        self.iteration_time_label.setAlignment(Qt.AlignCenter)
-        set_font(self.iteration_time_label, font_size + 2)  # 標籤字體略大
-        self.iteration_time_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        main_layout.addWidget(self.iteration_time_label, stretch=1)
-        
-        # Winner list
-        self.winner_label = QLabel("已中獎: ")
-        set_font(self.winner_label, font_size)
-        main_layout.addWidget(self.winner_label)
-        
+        # 將水平佈局添加到主佈局
+        main_layout.addLayout(horizontal_layout, stretch=1)
+
         # Winner grid layout
         self.winner_grid_layout = QGridLayout()
         self.winner_grid_widget = QWidget()
@@ -256,8 +289,6 @@ class RouletteApp(QMainWindow):
         self.grid_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         main_layout.addWidget(self.grid_widget, stretch=4)
 
-
-
         # Set main layout
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
@@ -269,6 +300,12 @@ class RouletteApp(QMainWindow):
     def update_reward(self):
         """Update current reward and employee pool."""
         self.current_reward = self.reward_combo.currentText()
+        # 更新 prize_label 的顯示文字，顯示目前選定的獎項
+
+        if self.mode_combo.currentText() == "AI部門":
+            self.prize_label.setText(f"本次獎項：{self.current_reward}\n紅色:五獎*2 | 橙色:四獎*2 | 黃色:三獎*2 | 綠色:二獎*2 | 藍色:一獎*1")
+        else:
+            self.prize_label.setText(f"本次獎項：{self.current_reward}")
         
         # 清空 winner_indices，避免舊獎項索引干擾新獎項
         self.winner_indices = []
@@ -278,6 +315,12 @@ class RouletteApp(QMainWindow):
             self.winner_records[self.current_reward] = []
         self.populate_employee_grid()
         self.update_winner_label()
+
+    def update_mode(self):
+        if self.mode_combo.currentText() == "AI部門":
+            self.prize_label.setText(f"本次獎項：{self.current_reward}\n紅色:五獎*2 | 橙色:四獎*2 | 黃色:三獎*2 | 綠色:二獎*2 | 藍色:一獎*1")
+        else:
+            self.prize_label.setText(f"本次獎項：{self.current_reward}")  
 
     def populate_winner_grid(self):
         """Populate the winner grid with the current reward's winners."""
@@ -296,11 +339,24 @@ class RouletteApp(QMainWindow):
             return
 
         # Define fixed grid size
-        grid_width = 150  # Fixed width for each grid
-        grid_height = 50  # Fixed height for each grid
+        grid_width = 220  # Fixed width for each grid
+        grid_height = 80  # Fixed height for each grid
 
-        cols = 10  # Fixed number of columns
+        cols = 8  # Fixed number of columns
         rows = (num_winners + cols - 1) // cols  # Calculate number of rows
+
+        # 取得當前模式
+        mode = self.mode_combo.currentText()
+        # 定義彩虹顏色列表
+        rainbow_colors = [
+            "#FF0000",  # Red
+            "#FFA500",  # Orange
+            "#FFFF00",  # Yellow
+            "#008000",  # Green
+            "#2F67D7",  # Blue
+            "#8E3AC6",  # Indigo
+            "#EE82EE",  # Violet
+        ]
 
         for index, winner in enumerate(winners):
             row = index // cols
@@ -309,17 +365,20 @@ class RouletteApp(QMainWindow):
             # Create QLabel for winner name
             label = QLabel(winner)
             label.setAlignment(Qt.AlignCenter)
-
-            # Set fixed size for the grid
             label.setFixedSize(grid_width, grid_height)
 
             # Set font size for the winner name
             font = label.font()
-            font.setPointSize(20)  # Adjust font size
+            font.setPointSize(40)  # Adjust font size
             label.setFont(font)
 
             # Set background and border styles
-            label.setStyleSheet("background-color: yellow; border: 2px solid black; padding: 5px;")
+            if mode == "AI部門":
+                color_index = (index // 2) % len(rainbow_colors)
+                background_color = rainbow_colors[color_index]
+                label.setStyleSheet(f"background-color: {background_color}; border: 3px solid black; padding: 2px;")
+            else:
+                label.setStyleSheet("background-color: yellow; border: 3px solid black; padding: 2px;")
 
             self.winner_grid_layout.addWidget(label, row, col)
 
@@ -333,7 +392,15 @@ class RouletteApp(QMainWindow):
 
         employees = self.rewards[self.current_reward]
         num_employees = len(employees)
-        cols = min(10, num_employees)  # Up to 10 columns
+        if num_employees < 16 :
+            oneCols = 5
+        elif num_employees < 22 :
+            oneCols = 7 
+        else:
+            oneCols = 10
+        
+        
+        cols = min(oneCols, num_employees)  # Up to 10 columns
         rows = (num_employees + cols - 1) // cols
 
         for index, employee in enumerate(employees):
@@ -351,6 +418,7 @@ class RouletteApp(QMainWindow):
             cell_width = self.grid_widget.width() // cols
             cell_height = self.grid_widget.height() // rows
             dynamic_font_size = max(int(min(cell_width, cell_height) * 0.2), 25)  # Adjust 0.2 for scaling
+
             font.setPointSize(dynamic_font_size)
             label.setFont(font)
 
@@ -392,7 +460,6 @@ class RouletteApp(QMainWindow):
         """Slot called when the wheel animation finishes."""
         self.total_duration = iteration_time
         self.statusBar().showMessage(f"本次歷遍時間: {iteration_time:.1f} 秒")
-        self.iteration_time_label.setText(f"本次歷遍時間: {iteration_time:.1f} 秒")
 
         self.start_lottery_with_iteration_time(iteration_time)
 
@@ -488,6 +555,7 @@ class RouletteApp(QMainWindow):
                     widget.setStyleSheet("border: 1px solid black; padding: 5px;")
 
             # 確定中獎者
+
             available_indices = [
                 i for i in range(len(self.rewards[self.current_reward]))
                 if self.rewards[self.current_reward][i] not in self.winner_records[self.current_reward]
@@ -506,7 +574,18 @@ class RouletteApp(QMainWindow):
             winners = [self.rewards[self.current_reward][idx] for idx in self.winner_indices]
             self.winner_records[self.current_reward].extend(winners)
             self.update_winner_label()
+            
+            # 儲存中獎結果到檔案
+            print(f">>> New Winner : {winners}, {self.current_reward}")
+            self._save_results_to_file(winners)
+            self.statusBar().showMessage(f"<<{self.current_reward}>> 中獎者 : {winners} || 得獎名單寫入至[{self.result_file}]")
 
+            # 更新其他視圖與邏輯
+            self.update_winner_label()
+            self.play_music("resources/winner_sound.mp3")
+            self.pull_button.setEnabled(True)
+            self.highlighting_winner = True
+            
             # 播放中獎音效
             self.play_music("resources/winner_sound.mp3")
 
@@ -533,22 +612,68 @@ class RouletteApp(QMainWindow):
             return
 
         pick_count = min(self.pick_spinner.value(), len(available_indices))
-        if self.mode_combo.currentText() == "隨機歷遍":
-            # 隨機跳動模式
-            if hasattr(self, 'last_indices'):
-                # 過濾掉上一次的歷遍者
-                candidates = [i for i in available_indices if i not in self.last_indices]
+        if self.mode_combo.currentText() == "隨機歷遍" or self.mode_combo.currentText() == "AI部門":
+            # 计算未被抽中的人数
+            non_pick_count = len(available_indices) - pick_count
+
+            if pick_count < non_pick_count:
+                # 避免连续高亮相同的人
+                if hasattr(self, 'last_selected_indices'):
+                    candidates = [i for i in available_indices if i not in self.last_selected_indices]
+                else:
+                    candidates = available_indices
+
+                if not candidates:
+                    candidates = available_indices
+
+                self.current_indices = random.sample(candidates, pick_count)
+
+                # 记录当前被选中的索引
+                self.last_selected_indices = self.current_indices
+                # 更新上次未被选中的索引
+                self.last_excluded_indices = [i for i in available_indices if i not in self.current_indices]
+            elif pick_count > non_pick_count:
+                # 避免连续不高亮相同的人
+                exclude_count = non_pick_count
+
+                if hasattr(self, 'last_excluded_indices'):
+                    exclusion_candidates = [i for i in available_indices if i not in self.last_excluded_indices]
+                else:
+                    exclusion_candidates = available_indices
+
+                if not exclusion_candidates:
+                    exclusion_candidates = available_indices
+
+                excluded_indices = random.sample(exclusion_candidates, exclude_count)
+
+                self.current_indices = [i for i in available_indices if i not in excluded_indices]
+
+                # 记录当前被选中和未被选中的索引
+                self.last_selected_indices = self.current_indices
+                self.last_excluded_indices = excluded_indices
             else:
-                candidates = available_indices
+                # 当抽取人数与未抽取人数相同时，允许重复抽取
+                self.current_indices = random.sample(available_indices, pick_count)
 
-            # 如果沒有其他候選人，直接重置為所有可用索引
-            if not candidates:
-                candidates = available_indices
+                # 记录当前被选中和未被选中的索引
+                self.last_selected_indices = self.current_indices
+                self.last_excluded_indices = [i for i in available_indices if i not in self.current_indices]
 
-            self.current_indices = random.sample(candidates, pick_count)
+            # 高亮当前员工
+            for idx in self.current_indices:
+                widget = self.grid_layout.itemAt(idx).widget()
+                widget.setStyleSheet("background-color: red; border: 2px solid black; padding: 5px;")
 
-            # 記錄當前的歷遍者
-            self.last_indices = self.current_indices
+            # 播放滚动音效
+            self.play_sound_effect(self.rolling_sound)
+
+            # 更新帧计数和计时器间隔
+            self.frame_count += 1
+            if self.frame_count < len(self.intervals):
+                self.timer.setInterval(int(self.intervals[self.frame_count]))
+            else:
+                self.timer.setInterval(int(self.intervals[-1]))
+
         else:
             # 循序歷遍模式
             indices = []
@@ -615,6 +740,12 @@ def check_resources():
         return missing_files + missing_folders
     return None
 
+def set_global_font(app):
+    """設定全域字體為微軟正黑體。"""
+    font = app.font()
+    font.setFamily("Microsoft JhengHei")
+    app.setFont(font)
+
 if __name__ == "__main__":
     print("||||||||||||||||||||||||||||||||||||||||")
     print("||| Welcome to use Rontgen Roulette! |||")
@@ -624,14 +755,16 @@ if __name__ == "__main__":
     missing_resources = check_resources()
     if missing_resources:
         app = QApplication(sys.argv)
+        set_global_font(app)  # 設定全域字體
         QMessageBox.critical(
             None,
             "資源缺失",
             f"以下資源檔案或資料夾缺失，請檢查後再執行程式：\n\n" + "\n".join(missing_resources) + "\n\n(rewards資料夾內需有`獎項.txt`)",
         )
         sys.exit(1)  # 終止程式
-        
+
     app = QApplication(sys.argv)
+    set_global_font(app)  # 設定全域字體
     lottery_app = RouletteApp()
     lottery_app.show()
     sys.exit(app.exec_())
