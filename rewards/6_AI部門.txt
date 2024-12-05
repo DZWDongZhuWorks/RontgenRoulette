@@ -1,0 +1,13 @@
+FullName,AI部門的內部獎項
+PickNum,9
+RainbowFormat,22221
+RewardID,
+王曉明1
+王曉明2
+王曉明3
+王曉明4
+王曉明5
+王曉明6
+王曉明7
+王曉明8
+王曉明9

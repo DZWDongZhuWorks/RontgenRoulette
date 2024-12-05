@@ -1,0 +1,7 @@
+FullName,生死搏鬥三個人裡面抽一個人拿到現金一百萬辛巴威幣
+PickNum,1
+RainbowFormat,
+RewardID,66
+王曉明1
+王曉明2
+王曉明3

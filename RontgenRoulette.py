@@ -5,7 +5,7 @@ import math
 from PySide2.QtWidgets import (
     QApplication, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
     QGridLayout, QWidget, QComboBox, QSpinBox, QSizePolicy, QMessageBox,
-    QFileDialog, QAction
+    QFileDialog, QAction, QDialog, QTextEdit
 )
 from PySide2.QtGui import QColor, QPainter, QPen, QBrush, QFont, QIcon
 from PySide2.QtCore import Qt, QTimer, QTime, Signal
@@ -123,7 +123,8 @@ class RouletteApp(QMainWindow):
         self.load_rewards()
         self.init_ui()
         self.highlighting_winner = False  # 新增布林變數
-
+        self.recursion = 0 # 連抽模式的遞迴次數
+        
         # 新增屬性以處理結果儲存
         self.result_file = None  # 儲存抽獎結果的檔案路徑
         self.file_initialized = False  # 是否已經初始化檔案
@@ -162,47 +163,81 @@ class RouletteApp(QMainWindow):
                 writer.writerow([winner, fullrewardName, rewardID])
                 
     def load_rewards(self):
-        """Load prize lists from txt files in rewards folder."""
+        """Load prize lists from txt files in rewards folder with updated format."""
         self.reward_info = {}
         self.reward_ids = []
         error_files = []  # 用於累積不符合條件的檔名
+        
         for file in os.listdir(self.rewards_folder):
             if file.endswith(".txt"):
                 components = os.path.splitext(file)[0].split('_')
-                if len(components) != 5:
+                if len(components) != 2:  # 檢查檔名是否符合格式
                     error_files.append(file)
                     continue
-                index, fullrewardName, ShowrewardName, pickNum_str, rewardID = components
+                
+                index, show_name = components
+                file_path = os.path.join(self.rewards_folder, file)
+                
                 try:
-                    pickNum = int(pickNum_str)
-                except ValueError:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        lines = f.read().splitlines()
+                except Exception as e:
+                    error_files.append(f"{file} (無法讀取: {str(e)})")
+                    continue
+
+                if len(lines) < 4:  # 檢查檔案內是否至少包含4行（基本資料+員工名單）
                     error_files.append(file)
                     continue
-                if rewardID in self.reward_info:
-                    error_files.append(file)
+
+                try:
+                    # 解析獎項基本資料
+                    full_name = lines[0].split(",", 1)[1].strip() if ',' in lines[0] else ""
+                    pick_num_str = lines[1].split(",", 1)[1].strip() if ',' in lines[1] else "0"
+                    rainbow_format = lines[2].split(",", 1)[1].strip() if ',' in lines[2] else ""
+                    reward_id = lines[3].split(",", 1)[1].strip() if ',' in lines[3] else ""
+
+                    # 檢查 PickNum 是否為有效整數
+                    try:
+                        pick_num = int(pick_num_str)
+                    except ValueError:
+                        error_files.append(f"{file} (PickNum 非有效整數)")
+                        continue
+                    
+                    # 獎項ID不得重複
+                    if reward_id in self.reward_info and reward_id != "":
+                        error_files.append(f"{file} (RewardID 重複)")
+                        continue
+
+                    # 解析員工名單
+                    employees = lines[4:]
+
+                    self.reward_ids.append(index)
+                    self.reward_info[index] = {
+                        'index': index,
+                        'fullrewardName': full_name,
+                        'ShowrewardName': show_name,
+                        'pickNum': pick_num,
+                        'RainbowFormat': rainbow_format,
+                        'rewardID': reward_id,
+                        'employees': employees,
+                        'winners': []
+                    }
+                except Exception as e:
+                    error_files.append(f"{file} (解析失敗: {str(e)})")
                     continue
-                self.reward_ids.append(rewardID)
-                self.reward_info[rewardID] = {
-                    'index': index,
-                    'fullrewardName': fullrewardName,
-                    'ShowrewardName': ShowrewardName,
-                    'pickNum': pickNum,
-                    'rewardID': rewardID,
-                    'employees': [],
-                    'winners': []
-                }
-                with open(os.path.join(self.rewards_folder, file), "r", encoding="utf-8") as f:
-                    self.reward_info[rewardID]['employees'] = f.read().splitlines()
 
         # 如果有錯誤的檔案，顯示錯誤訊息
         if error_files:
             error_message = (
-                "以下獎項清單檔名格式錯誤，未被載入於程式中：\n\n"
+                "以下獎項清單檔案格式錯誤，未被載入於程式中：\n\n"
                 + "\n".join(error_files)
                 + "\n\n-------------------------------"
-                + "\n`獎項.txt`檔名格式須符合 Index_fullName_ShowName_pickNum_rewardID.txt"
+                + "\n`獎項.txt`檔名格式須符合 Index_ShowName.txt，"
+                + "檔案內容前四行格式如下：\n"
+                + "FullName,全名\nPickNum,數字\nRainbowFormat,參數\nRewardID,參數\n"
+                + "其餘行為員工名單。"
             )
-            print(error_message)  # 可以選擇印到 console 或用 QMessageBox 顯示
+            print(error_message)  # 可選擇印到 console 或用 QMessageBox 顯示
             QMessageBox.critical(None, "獎項清單載入失敗", error_message)
 
     def init_ui(self):
@@ -225,9 +260,9 @@ class RouletteApp(QMainWindow):
         self.reward_combo = QComboBox()
         set_font(self.reward_combo, font_size)
         # Add items to combo box
-        for rewardID in self.reward_ids:
-            ShowrewardName = self.reward_info[rewardID]['ShowrewardName']
-            self.reward_combo.addItem(ShowrewardName, userData=rewardID)
+        for index in self.reward_ids:
+            ShowrewardName = self.reward_info[index]['ShowrewardName']
+            self.reward_combo.addItem(ShowrewardName, userData=self.reward_info[index]['rewardID'])
         self.reward_combo.currentIndexChanged.connect(self.update_reward)
         reward_layout.addWidget(self.reward_label)
         reward_layout.addWidget(self.reward_combo)
@@ -242,18 +277,29 @@ class RouletteApp(QMainWindow):
         reward_layout.addWidget(self.pick_spinner)
 
         # Mode selection
-        self.mode_label = QLabel("模式:")
+        self.mode_label = QLabel("抽取模式:")
         set_font(self.mode_label, font_size)
         self.mode_combo = QComboBox()
         set_font(self.mode_combo, font_size)
         # 新增 "AI部門" 選項
-        self.mode_combo.addItems(["隨機歷遍", "循序歷遍", "AI部門"])
+        self.mode_combo.addItems(["隨機歷遍", "循序歷遍", "連抽模式"])
         self.mode_combo.currentIndexChanged.connect(self.update_mode)
         reward_layout.addWidget(self.mode_label)
         reward_layout.addWidget(self.mode_combo)
+        
+        # Color selection
+        self.color_label = QLabel("得獎顯色:")
+        set_font(self.color_label, font_size)
+        self.color_combo = QComboBox()
+        set_font(self.color_combo, font_size)
 
+        self.color_combo.addItems(["單色", "彩色"])
+        self.color_combo.currentIndexChanged.connect(self.update_color_mode)
+        reward_layout.addWidget(self.color_label)
+        reward_layout.addWidget(self.color_combo)
+        
         # Iteration time range (seconds)
-        self.duration_label = QLabel("歷遍時間範圍(秒):")
+        self.duration_label = QLabel("歷遍範圍(秒):")
         set_font(self.duration_label, font_size)
         self.duration_lower_spinner = QSpinBox()
         set_font(self.duration_lower_spinner, font_size)
@@ -286,7 +332,7 @@ class RouletteApp(QMainWindow):
         set_font(self.final_interval_label, font_size)
         self.final_interval_spinner = QSpinBox()
         set_font(self.final_interval_spinner, font_size)
-        self.final_interval_spinner.setRange(100, 5000)
+        self.final_interval_spinner.setRange(2, 5000)
         self.final_interval_spinner.setValue(500)  # Default 2000 ms
         reward_layout.addWidget(self.final_interval_label)
         reward_layout.addWidget(self.final_interval_spinner)
@@ -301,6 +347,11 @@ class RouletteApp(QMainWindow):
         import_action = QAction('Import Winning List', self)
         import_action.triggered.connect(self.import_winning_list)
         dev_menu.addAction(import_action)
+        
+        # Add Import action
+        about_me = QAction('About Rontgen Roulette', self)
+        about_me.triggered.connect(self.about_me)
+        dev_menu.addAction(about_me)
 
         # 創建水平佈局
         horizontal_layout = QHBoxLayout()
@@ -353,7 +404,10 @@ class RouletteApp(QMainWindow):
         current_index = self.reward_combo.currentIndex()
         current_rewardID = self.reward_combo.itemData(current_index)
         self.current_reward_id = current_rewardID
-        current_reward_info = self.reward_info[current_rewardID]
+
+        # Get the correct index from self.reward_ids
+        index = self.reward_ids[current_index]
+        current_reward_info = self.reward_info[index]
         self.current_reward_info = current_reward_info
         ShowrewardName = current_reward_info['ShowrewardName']
         fullrewardName = current_reward_info['fullrewardName']
@@ -361,7 +415,7 @@ class RouletteApp(QMainWindow):
         employees = current_reward_info['employees']
 
         # Update prize_label to display ShowrewardName
-        if self.mode_combo.currentText() == "AI部門":
+        if self.mode_combo.currentText() == "連抽模式":
             self.prize_label.setText(f"本次獎項：{ShowrewardName}\n紅色:五獎*2 | 橙色:四獎*2 | 黃色:三獎*2 | 綠色:二獎*2 | 藍色:一獎*1")
         else:
             self.prize_label.setText(f"本次獎項：{ShowrewardName}")
@@ -376,12 +430,25 @@ class RouletteApp(QMainWindow):
         self.update_winner_label()
 
     def update_mode(self):
-        if self.mode_combo.currentText() == "AI部門":
+        if self.mode_combo.currentText() == "連抽模式":
+            self.pick_label.setText("連抽人數:")
+            self.duration_lower_spinner.setValue(1)
+            self.duration_upper_spinner.setValue(1)
+            self.start_interval_spinner.setValue(1)
+            self.final_interval_spinner.setValue(20)
             ShowrewardName = self.current_reward_info['ShowrewardName']
             self.prize_label.setText(f"本次獎項：{ShowrewardName}\n紅色:五獎*2 | 橙色:四獎*2 | 黃色:三獎*2 | 綠色:二獎*2 | 藍色:一獎*1")
         else:
+            self.pick_label.setText("單抽人數:")
+            self.duration_lower_spinner.setValue(3)
+            self.duration_upper_spinner.setValue(10)
+            self.start_interval_spinner.setValue(100)
+            self.final_interval_spinner.setValue(500)
             ShowrewardName = self.current_reward_info['ShowrewardName']
             self.prize_label.setText(f"本次獎項：{ShowrewardName}")  
+
+    def update_color_mode(self):
+        self.populate_winner_grid()
 
     def populate_winner_grid(self):
         """Populate the winner grid with the current reward's winners."""
@@ -406,9 +473,10 @@ class RouletteApp(QMainWindow):
         cols = 8  # Fixed number of columns
         rows = (num_winners + cols - 1) // cols  # Calculate number of rows
 
-        # 取得當前模式
-        mode = self.mode_combo.currentText()
-        # 定義彩虹顏色列表
+        # Get the current mode
+        mode = self.color_combo.currentText()
+        rainbow_format = self.current_reward_info['RainbowFormat']
+        # Define rainbow colors list
         rainbow_colors = [
             "#FF0000",  # Red
             "#FFA500",  # Orange
@@ -418,6 +486,28 @@ class RouletteApp(QMainWindow):
             "#8E3AC6",  # Indigo
             "#EE82EE",  # Violet
         ]
+
+        # Function to parse rainbow_format
+        def parse_rainbow_format(rainbow_format):
+            counts = []
+            for c in rainbow_format:
+                if '1' <= c <= '9':
+                    counts.append(int(c))
+                elif 'A' <= c <= 'Z':
+                    counts.append(ord(c) - ord('A') + 10)
+            return counts
+
+        if mode == "彩色":
+            if rainbow_format != "":
+                counts_list = parse_rainbow_format(rainbow_format)
+                color_index = 0
+                if counts_list:
+                    count_remaining = counts_list.pop(0)
+                else:
+                    count_remaining = 2  # Default to 2 if counts_list is empty
+                default_remaining = 2
+            else:
+                pass  # Will use default rule in the loop
 
         for index, winner in enumerate(winners):
             row = index // cols
@@ -434,15 +524,30 @@ class RouletteApp(QMainWindow):
             label.setFont(font)
 
             # Set background and border styles
-            if mode == "AI部門":
-                color_index = (index // 2) % len(rainbow_colors)
-                background_color = rainbow_colors[color_index]
-                label.setStyleSheet(f"background-color: {background_color}; border: 3px solid black; padding: 2px;")
+            if mode == "彩色":
+                if rainbow_format != "":
+                    # Use rainbow_format to determine color change
+                    background_color = rainbow_colors[color_index % len(rainbow_colors)]
+                    label.setStyleSheet(f"background-color: {background_color}; border: 3px solid black; padding: 2px;")
+                    # Decrement count_remaining
+                    count_remaining -= 1
+                    if count_remaining == 0:
+                        color_index += 1
+                        if counts_list:
+                            count_remaining = counts_list.pop(0)
+                        else:
+                            # counts_list is exhausted, use default rule
+                            count_remaining = default_remaining
+                else:
+                    # Use default rule, change color every two people
+                    color_index = (index // 2) % len(rainbow_colors)
+                    background_color = rainbow_colors[color_index]
+                    label.setStyleSheet(f"background-color: {background_color}; border: 3px solid black; padding: 2px;")
             else:
                 label.setStyleSheet("background-color: yellow; border: 3px solid black; padding: 2px;")
 
             self.winner_grid_layout.addWidget(label, row, col)
-
+               
     def populate_employee_grid(self):
         """Populate the employee grid based on the current reward."""
         # Clear existing grid
@@ -492,6 +597,16 @@ class RouletteApp(QMainWindow):
             self.grid_layout.addWidget(label, row, col)
 
     def start_lottery(self):
+        self.pick_count_temp = self.pick_spinner.value()
+        
+        if self.mode_combo.currentText() == "連抽模式":
+            self.pick_spinner.setValue(1)
+            self.recursion = self.pick_count_temp -1 # 因為還沒進recursion前已經先跑一次
+            self.start_lottery_unit()                
+        else:
+            self.start_lottery_unit()
+
+    def start_lottery_unit(self):
         """Start the lottery drawing."""
         # 如果有高亮的中獎者，先將其轉為黃色
         if self.highlighting_winner:
@@ -512,17 +627,6 @@ class RouletteApp(QMainWindow):
             if reply == QMessageBox.No:
                 return
 
-            # Adjust pick_count to not exceed pickNum
-            # pick_count = pickNum - total_winners
-            # self.pick_spinner.setValue(pick_count)
-
-        # Check if pickNum has been reached
-        if total_winners >= pickNum:
-            # Show dialog to confirm
-            reply = QMessageBox.question(self, '警告', f"已經達到抽取上限 {pickNum}，是否還要再進行抽取？",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.No:
-                return
 
         # 禁用 PULL 按鈕
         self.pull_button.setEnabled(False)
@@ -563,10 +667,10 @@ class RouletteApp(QMainWindow):
         final_interval_ms = self.final_interval_spinner.value()
 
         # Validate pick_count
-        available_employees = [e for e in employees if e not in self.current_reward_info['winners']]
-        remaining_slots = self.current_reward_info['pickNum'] - len(self.current_reward_info['winners'])
+        # available_employees = [e for e in employees if e not in self.current_reward_info['winners']]
+        # remaining_slots = self.current_reward_info['pickNum'] - len(self.current_reward_info['winners'])
         # pick_count = min(pick_count, len(available_employees), remaining_slots)
-        self.pick_spinner.setValue(pick_count)
+        # self.pick_spinner.setValue(pick_count)
 
         # if pick_count <= 0:
         #     QMessageBox.information(self, '訊息', '沒有可用的員工進行抽獎。')
@@ -670,17 +774,20 @@ class RouletteApp(QMainWindow):
 
             # 更新其他視圖與邏輯
             self.update_winner_label()
-            self.play_music("resources/winner_sound.mp3")
+            
             self.pull_button.setEnabled(True)
             self.highlighting_winner = True
             
-            # 播放中獎音效
-            self.play_music("resources/winner_sound.mp3")
-
             # 啟用 PULL 按鈕
             self.pull_button.setEnabled(True)
             self.highlighting_winner = True  # 標記高亮中獎者
-
+            if self.recursion > 0 :
+                self.recursion -= 1
+                self.start_lottery_unit()
+            else:
+                self.play_music("resources/winner_sound.mp3")
+                self.pick_spinner.setValue(self.pick_count_temp)
+                
             return
 
         # 清除先前的高亮（保留當次紅色高亮）
@@ -706,7 +813,7 @@ class RouletteApp(QMainWindow):
         #     self.timer.stop()
         #     return
 
-        if self.mode_combo.currentText() == "隨機歷遍" or self.mode_combo.currentText() == "AI部門":
+        if self.mode_combo.currentText() == "隨機歷遍" or self.mode_combo.currentText() == "連抽模式":
             # 计算未被抽中的人数
             non_pick_count = len(available_indices) - pick_count
 
@@ -820,7 +927,7 @@ class RouletteApp(QMainWindow):
         """Import winning list csv and restore the draw state."""
         options = QFileDialog.Options()
         fileName, _ = QFileDialog.getOpenFileName(self, "Import Winning List", "",
-                                                  "CSV Files (*.csv);;All Files (*)", options=options)
+                                                "CSV Files (*.csv);;All Files (*)", options=options)
         if fileName:
             try:
                 with open(fileName, 'r', encoding='utf-8-sig') as file:
@@ -830,17 +937,81 @@ class RouletteApp(QMainWindow):
                         if len(row) < 3:
                             continue
                         winner_name, fullrewardName, rewardID = row[:3]
-                        # Find the rewardID in self.reward_info
-                        if rewardID in self.reward_info:
-                            reward_info = self.reward_info[rewardID]
-                            if winner_name not in reward_info['winners']:
-                                reward_info['winners'].append(winner_name)
-                        else:
+                        # 在 self.reward_info 中查找匹配的 rewardID
+                        reward_found = False
+                        for reward_info in self.reward_info.values():
+                            if reward_info['rewardID'] == rewardID:
+                                if winner_name not in reward_info['winners']:
+                                    reward_info['winners'].append(winner_name)
+                                reward_found = True
+                                break
+                        if not reward_found:
                             print(f"Reward ID {rewardID} not found in current rewards.")
-                QMessageBox.information(self, "Import Success", "Winning list imported and draw state restored.")
+                QMessageBox.information(self, "導入成功", "中獎名單已匯入，抽獎狀態已恢復")
                 self.update_reward()
             except Exception as e:
-                QMessageBox.critical(self, "Import Error", f"An error occurred while importing: {e}")
+                QMessageBox.critical(self, "導入錯誤", f"導入時發生錯誤: {e}")
+
+    def about_me(self):
+        """Show dialog about Rontgen Roulette."""
+        message = """
+        Rontgen Roulette版本 : v5
+        最終編譯時間 : 20241205
+        
+        有關Rontgen Roulette程式中隨機的部分是由什麼函數執行的?
+        - python的`random.sample`函數
+        
+        `random.sample` 是如何運作的？
+        - `random.sample(population, k)` 方法從指定的列表（`population`）中隨機選取 `k` 個不重複的元素。
+        - 該方法的隨機數生成基於 Mersenne Twister 演算法，這是一種高效能且品質極高的偽隨機數生成器，經廣泛測試被證明具有強大的隨機性。
+
+        如何解釋「隨機性」的公平性？
+        - 均勻分佈：每位參與者的選取概率是均勻的，無任何偏向。
+        - 獨立事件：每次抽獎的結果都是獨立的，不受上一輪結果的影響。
+        - 高效能測試：Mersenne Twister 演算法在多種測試（如 Diehard 測試套件）中證明其隨機性足夠應用於絕大多數非密碼學用途。Mersenne Twister（梅森旋轉演算法）是一個由松本眞和西村拓士於 1997 年開發的偽隨機數生成算法，基於有限二進制欄位上的矩陣線性遞歸。其名稱源自於其周期長度取自梅森質數的特性。
+
+        使用者信心保障
+        - 來源可信：Python 是一個廣受社群支持並經過實際驗證的開發環境，`random.sample` 作為其核心函數之一，具有極高的可信度。
+        - 透明邏輯：程式的隨機數邏輯公開在程式碼中，使用者可以輕鬆檢視，確認無任何刻意設置的不公平因素。
+
+        透過這些設計，Rontgen Roulette 能夠提供公正、隨機的抽獎體驗，讓參與者感受到真實的隨機性與公平性。如果您仍有疑問，歡迎聯繫開發者進一步了解實作邏輯！
+
+        免責聲明
+        使用該程式即視同同意該免責聲明。
+        本程式的隨機抽獎結果是基於電腦隨機數生成方法，旨在提供一個公平且無偏的抽獎過程。然而，由於偽隨機數生成的特性，無法保證抽獎結果的完全不可預測性。本程式僅供娛樂用途，開發者不對使用本程式進行的任何活動結果負責。程式中產生任何技術問題與使用糾紛一概與開發者無關。使用者應自行承擔使用本程式所帶來的所有風險和後果。
+
+        聯絡我們
+        如有任何問題，請聯繫：
+        - 開發者：Rontgen, DongZhuWorks.
+        - Email: dongzhuworks@gmail.com
+        - 該程式碼的撰寫有 GPT-4 的參與
+
+        """
+
+        # Create a dialog window
+        dialog = QDialog(self)
+        dialog.setWindowTitle("About Rontgen Roulette")
+
+        # Set up the layout
+        layout = QVBoxLayout()
+
+        # Use QTextEdit for scrollable text display
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(message)
+        text_edit.setStyleSheet("font-size: 14pt;")
+
+        # Add the text_edit to the layout
+        layout.addWidget(text_edit)
+
+        # Set the dialog layout
+        dialog.setLayout(layout)
+
+        # Resize the dialog to a reasonable size
+        dialog.resize(800, 600)
+
+        # Display the dialog
+        dialog.exec_()
 
 def check_resources():
     """檢查必要的資源檔案與獎項檔案是否存在。"""
@@ -868,10 +1039,10 @@ def set_global_font(app):
     app.setFont(font)
 
 if __name__ == "__main__":
-    print("||||||||||||||||||||||||||||||||||||||||")
-    print("||| Welcome to use Rontgen Roulette! |||")
-    print("||| Power by Rontgen, DongZhuWorks.  |||")
-    print("||||||||||||||||||||||||||||||||||||||||")
+    print("|||||||||||||||||||||||||||||||||||||||||||")
+    print("||| Welcome to use Rontgen Roulette v5! |||")
+    print("|||   Power by Rontgen, DongZhuWorks.   |||")
+    print("|||||||||||||||||||||||||||||||||||||||||||")
     # 檢查資源完整性
     missing_resources = check_resources()
     if missing_resources:
@@ -882,7 +1053,10 @@ if __name__ == "__main__":
             "資源缺失",
             f"以下資源檔案或資料夾缺失，請檢查後再執行程式：\n\n" + "\n".join(missing_resources) 
             + "\n\n(rewards資料夾內需有`獎項.txt`)"
-            + "\n(`獎項.txt`檔名格式須符合 Index_fullName_ShowName_pickNum_rewardID.txt)",
+            + "\n`獎項.txt`檔名格式須符合 Index_ShowName.txt，"
+            + "檔案內容前四行格式如下：\n"
+            + "FullName,全名\nPickNum,數字\nRainbowFormat,參數\nRewardID,參數\n"
+            + "其餘行為員工名單。"
         )
         sys.exit(1)  # 終止程式
 

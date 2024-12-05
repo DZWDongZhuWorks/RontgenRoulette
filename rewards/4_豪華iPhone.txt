@@ -1,0 +1,14 @@
+FullName,十人獎裡面會抽兩個人的豪華iPhone
+PickNum,2
+RainbowFormat,
+RewardID,77
+王曉明1
+王曉明2
+王曉明3
+王曉明4
+王曉明5
+王曉明6
+王曉明7
+王曉明8
+王曉明9
+王曉明10
